@@ -7,9 +7,12 @@ from keybert import KeyBERT
 from konlpy.tag import Okt
 from pdfminer.high_level import extract_text
 from sentence_transformers import SentenceTransformer, util
+from sklearn.cluster import KMeans
+from collections import defaultdict, Counter
 from app.domain.model.esg_issue_dto import ESGIssue
 
-OUTPUT_DIR = "/app/app/domain/output"
+
+OUTPUT_DIR = "/app/output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 GRI_KEYWORD_MAP = {
@@ -70,6 +73,29 @@ def map_keywords_to_gri_or_semantic(keywords: list[str], full_text: str) -> str 
         return mapped
     return match_to_gri_by_similarity(full_text)
 
+def compute_keyword_frequency_score(keywords: list[str], text: str) -> float:
+    total = sum(text.count(kw) for kw in keywords)
+    return min(total / 3, 1.0)
+
+def simple_sentiment_score(text: str) -> float:
+    positive_words = ["혁신", "기회", "강화", "확대", "향상"]
+    negative_words = ["위험", "문제", "리스크", "감소", "지연"]
+    pos = sum(text.count(w) for w in positive_words)
+    neg = sum(text.count(w) for w in negative_words)
+    base = 0.5 + 0.1 * (pos - neg)
+    return max(min(base, 1.0), 0.0)
+
+def contextual_importance_score(text: str) -> float:
+    emphasis_words = ["중요", "핵심", "우선", "전략", "주요", "중대"]
+    return 0.2 if any(word in text for word in emphasis_words) else 0.0
+
+def compute_issue_score(keywords: list[str], text: str) -> float:
+    freq_score = compute_keyword_frequency_score(keywords, text)
+    sent_score = simple_sentiment_score(text)
+    ctx_score = contextual_importance_score(text)
+    final_score = 0.4 * freq_score + 0.4 * sent_score + 0.2 * ctx_score
+    return round(final_score, 3)
+
 def save_issues_to_json(issues: list[ESGIssue], filename: str) -> str:
     path = os.path.join(OUTPUT_DIR, filename)
     with open(path, "w", encoding="utf-8") as f:
@@ -100,13 +126,35 @@ def extract_esg_issues_from_pdf(file_path: str) -> list[ESGIssue]:
     for para in filtered_paragraphs:
         keywords = extract_keywords_from_text(para, kw_model)
         mapped = map_keywords_to_gri_or_semantic(keywords, para)
+        score = compute_issue_score(keywords, para)
         issue = ESGIssue(
             id=str(uuid.uuid4()),
             text=para,
             keywords=keywords,
             mapped_gri=mapped,
-            score=0.85,
+            score=score,
             source_file=file_path.split("/")[-1]
         )
         results.append(issue)
     return results
+
+def cluster_keywords(issues: list[ESGIssue], n_clusters: int = 5):
+    all_keywords = [kw for issue in issues for kw in issue.keywords]
+    unique_keywords = list(set(all_keywords))
+    if len(unique_keywords) < n_clusters:
+        return {}, {}
+
+    embeddings = sbert_model.encode(unique_keywords)
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    labels = kmeans.fit_predict(embeddings)
+
+    clustered = defaultdict(list)
+    for kw, label in zip(unique_keywords, labels):
+        clustered[label].append(kw)
+
+    cluster_representatives = {
+        label: Counter(kw_list).most_common(1)[0][0]
+        for label, kw_list in clustered.items()
+    }
+
+    return clustered, cluster_representatives
