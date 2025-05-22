@@ -150,11 +150,20 @@ def cluster_keywords(issues: list[ESGIssue], n_clusters: int = 5):
 
     clustered = defaultdict(list)
     for kw, label in zip(unique_keywords, labels):
-        clustered[label].append(kw)
+        clustered[int(label)].append(kw)  # label을 int로 명시적 변환
 
     cluster_representatives = {
-        label: Counter(kw_list).most_common(1)[0][0]
+        int(label): Counter(kw_list).most_common(1)[0][0]  # 여기도 명시적 변환
         for label, kw_list in clustered.items()
     }
 
     return clustered, cluster_representatives
+
+def save_clusters_to_json(clustered: dict, representatives: dict, filename: str) -> str:
+    path = os.path.join(OUTPUT_DIR, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({
+            "clustered_keywords": clustered,
+            "cluster_representatives": representatives
+        }, f, ensure_ascii=False, indent=2)
+    return path
